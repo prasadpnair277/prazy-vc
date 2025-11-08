@@ -9,20 +9,24 @@
     body {
       margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif;
       background: #121212; color: white; display: flex; flex-direction: column; align-items: center;
-      min-height: 100vh;
+      min-height: 100vh; overflow: hidden;
     }
     header {
       width: 100%; padding: 20px; background-color: #1e1e1e; text-align: center;
       font-size: 1.5rem; font-weight: bold; color: #00d8ff; border-bottom: 1px solid #333;
     }
-    .container { width: 100%; max-width: 500px; padding: 20px; }
+    .container { width: 100%; max-width: 500px; padding: 20px; position: relative; }
     video { width: 100%; border-radius: 12px; margin: 10px 0; background: black; }
-    #localVideo { transform: scaleX(-1); } /* mirror preview */
-    @media (max-width: 600px) {
-      #localVideo {
-        width: 40%; position: fixed; bottom: 15px; right: 15px; z-index: 10; border: 2px solid #00d8ff;
-      }
+    #localVideo { transform: scaleX(-1); position: fixed; bottom: 15px; right: 15px; width: 40%; border: 2px solid #00d8ff; z-index: 10; border-radius: 10px; cursor: grab; }
+    #remoteVideo { width: 100%; display: none; }
+    #videoControls {
+      position: absolute; bottom: 10px; right: 10px; display: flex; gap: 8px; z-index: 15;
     }
+    .icon-btn {
+      background: rgba(0,0,0,0.6); border: none; color: white; font-size: 1rem;
+      border-radius: 50%; padding: 8px; cursor: pointer;
+    }
+    .icon-btn:hover { background: rgba(0,0,0,0.8); }
     .input-group { margin: 15px 0; }
     input, button { width: 100%; padding: 12px; margin-top: 8px; border-radius: 8px; border: none; font-size: 1rem; }
     input { background-color: #1e1e1e; color: white; border: 1px solid #333; }
@@ -32,20 +36,44 @@
       background: #222; padding: 10px; border-radius: 8px; margin: 10px 0; word-break: break-all; font-size: 0.9rem;
       text-align: center; cursor: pointer;
     }
-    .controls { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; }
+    .controls {
+      display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; transition: opacity 0.3s;
+    }
     .controls button { flex: 1; }
     .muted-notice { text-align: center; font-size: 0.9rem; color: #ff6666; display: none; margin-top: 5px; }
+
+    /* mobile full remote view */
+    @media (max-width: 600px) {
+      #remoteVideo {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100vh; object-fit: cover;
+        border-radius: 0; z-index: 1;
+      }
+      .controls {
+        position: fixed; bottom: 15px; width: 100%; left: 0;
+        justify-content: center; gap: 15px; z-index: 20; opacity: 0;
+      }
+      .controls.show { opacity: 1; }
+      #localVideo {
+        width: 30%; border: 2px solid #00d8ff; z-index: 10;
+      }
+    }
   </style>
 </head>
 <body>
 
-  <header>🔗 Prazyo</header>
+  <header>🔗 Peer2Peer Call</header>
   <div class="container">
-    <video id="remoteVideo" autoplay playsinline style="display:none;"></video>
+    <video id="remoteVideo" autoplay playsinline></video>
     <div id="mutedNotice" class="muted-notice">Participant muted</div>
-    <video id="localVideo" autoplay muted playsinline></video>
 
-    <!-- generateSection: contains generate button + the id box (id box hidden initially) -->
+    <div style="position:relative;">
+      <video id="localVideo" autoplay muted playsinline></video>
+      <div id="videoControls">
+        <button id="cameraToggle" class="icon-btn">📷</button>
+        <button id="switchCam" class="icon-btn">🔄</button>
+      </div>
+    </div>
+
     <div class="input-group" id="generateSection">
       <button id="generateBtn" onclick="generateId()">Generate My ID</button>
       <div class="peer-info" id="myIdBox" style="display:none;" onclick="copyPeerId()">
@@ -60,7 +88,7 @@
       <button id="connectBtn" onclick="callPeer()">Connect</button>
     </div>
 
-    <div class="controls">
+    <div class="controls" id="controlBar">
       <button id="muteBtn" onclick="toggleMute()">Mute</button>
       <button id="endBtn" onclick="endCall()">End Call</button>
     </div>
@@ -68,57 +96,47 @@
 
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script>
-    let peer;
-    let localStream;
-    let currentCall;
-    let isMuted = false;
-    let dataConn;
-    let isGeneratedPeer = false; // to know if user clicked Generate button
-
+    let peer, localStream, currentCall, isMuted = false, dataConn;
+    let videoTrack, facingMode = 'user';
     const peerIdText = document.getElementById('peerIdText');
     const myIdBox = document.getElementById('myIdBox');
     const localVideo = document.getElementById('localVideo');
     const remoteVideo = document.getElementById('remoteVideo');
     const mutedNotice = document.getElementById('mutedNotice');
     const muteBtn = document.getElementById('muteBtn');
-
     const connectSection = document.getElementById('connectSection');
     const generateSection = document.getElementById('generateSection');
     const generateBtn = document.getElementById('generateBtn');
-    const connectBtn = document.getElementById('connectBtn');
+    const cameraToggle = document.getElementById('cameraToggle');
+    const switchCam = document.getElementById('switchCam');
+    const controlBar = document.getElementById('controlBar');
 
     async function initMedia() {
       try {
         localStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' },
-          audio: true
+          video: { facingMode }, audio: true
         });
         localVideo.srcObject = localStream;
+        videoTrack = localStream.getVideoTracks()[0];
       } catch (err) {
         alert("Camera/Microphone access denied.");
       }
     }
 
     async function generateId() {
-      isGeneratedPeer = true;
       if (!localStream) await initMedia();
-
       if (!peer) {
         peer = new Peer();
         setupPeerEvents();
       }
-
       connectSection.style.display = 'none';
       generateBtn.style.display = 'none';
     }
 
     function setupPeerEvents() {
       peer.on('open', id => {
-        // only show your ID if user clicked "Generate My ID"
-        if (isGeneratedPeer) {
-          peerIdText.textContent = id;
-          myIdBox.style.display = 'block';
-        }
+        peerIdText.textContent = id;
+        myIdBox.style.display = 'block';
       });
 
       peer.on('call', call => {
@@ -143,18 +161,15 @@
         remoteVideo.style.display = 'block';
       });
       currentCall = call;
-
-      // hide unnecessary UI after connection
       connectSection.style.display = 'none';
       generateBtn.style.display = 'none';
-      myIdBox.style.display = 'none'; // hide ID after connected
+      myIdBox.style.display = 'none';
     }
 
     async function callPeer() {
       const targetId = document.getElementById('targetId').value.trim();
       if (!targetId) return alert("Please enter a valid ID.");
       if (!localStream) await initMedia();
-
       if (!peer) {
         peer = new Peer();
         setupPeerEvents();
@@ -162,42 +177,30 @@
       } else {
         makeCall(targetId);
       }
-
       generateBtn.style.display = 'none';
       connectSection.style.display = 'none';
-      myIdBox.style.display = 'none'; // hide any auto-generated id box
     }
 
     function makeCall(targetId) {
       const call = peer.call(targetId, localStream);
       try {
         dataConn = peer.connect(targetId);
-        dataConn.on('open', () => {});
         dataConn.on('data', handleDataMessage);
-      } catch (e) {
-        console.warn('Data conn error (non-fatal):', e);
-      }
-
+      } catch (e) { console.warn('Data conn error', e); }
       call.on('stream', remoteStream => {
         remoteVideo.srcObject = remoteStream;
         remoteVideo.style.display = 'block';
       });
-
       call.on('close', () => {
         remoteVideo.srcObject = null;
         remoteVideo.style.display = 'none';
       });
-
       currentCall = call;
-      myIdBox.style.display = 'none'; // hide id once connected
+      myIdBox.style.display = 'none';
     }
 
     function handleDataMessage(msg) {
-      if (msg === 'MUTED') {
-        mutedNotice.style.display = 'block';
-      } else if (msg === 'UNMUTED') {
-        mutedNotice.style.display = 'none';
-      }
+      mutedNotice.style.display = msg === 'MUTED' ? 'block' : 'none';
     }
 
     function toggleMute() {
@@ -205,25 +208,14 @@
       isMuted = !isMuted;
       const audioTrack = localStream.getAudioTracks()[0];
       audioTrack.enabled = !isMuted;
-
       muteBtn.style.backgroundColor = isMuted ? '#ff6666' : '#00d8ff';
       muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
-
-      if (dataConn && dataConn.open) {
-        try { dataConn.send(isMuted ? 'MUTED' : 'UNMUTED'); }
-        catch(e) { console.warn('Failed to send mute message', e); }
-      }
+      if (dataConn && dataConn.open) dataConn.send(isMuted ? 'MUTED' : 'UNMUTED');
     }
 
     function endCall() {
-      if (currentCall) {
-        try { currentCall.close(); } catch(e) {}
-        currentCall = null;
-      }
-      if (peer) {
-        try { peer.destroy(); } catch(e) {}
-        peer = null;
-      }
+      if (currentCall) { try { currentCall.close(); } catch(e){} currentCall=null; }
+      if (peer) { try { peer.destroy(); } catch(e){} peer=null; }
       window.location.href = window.location.pathname;
     }
 
@@ -232,20 +224,52 @@
       if (!id) return;
       navigator.clipboard.writeText(id).then(() => {
         alert('Copied Peer ID: ' + id);
-      }).catch(() => {
-        prompt('Copy your ID manually:', id);
-      });
+      }).catch(() => prompt('Copy your ID manually:', id));
     }
 
-    // Fix for iOS Safari: reinitialize camera when tab regains focus
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && localStream) {
-        localVideo.srcObject = localStream;
+    // --- New Feature: Camera Toggle ---
+    cameraToggle.onclick = () => {
+      if (!videoTrack) return;
+      const enabled = videoTrack.enabled = !videoTrack.enabled;
+      cameraToggle.textContent = enabled ? '📷' : '🚫';
+    };
+
+    // --- New Feature: Switch Camera ---
+    switchCam.onclick = async () => {
+      facingMode = facingMode === 'user' ? 'environment' : 'user';
+      if (localStream) {
+        const tracks = localStream.getTracks();
+        tracks.forEach(t => t.stop());
       }
+      await initMedia();
+      if (currentCall) {
+        const sender = currentCall.peerConnection.getSenders().find(s => s.track.kind === 'video');
+        if (sender) sender.replaceTrack(localStream.getVideoTracks()[0]);
+      }
+    };
+
+    // --- Make self video movable (drag to corners) ---
+    let isDragging = false, offsetX, offsetY;
+    localVideo.addEventListener('mousedown', e => {
+      isDragging = true;
+      offsetX = e.clientX - localVideo.offsetLeft;
+      offsetY = e.clientY - localVideo.offsetTop;
+    });
+    document.addEventListener('mousemove', e => {
+      if (!isDragging) return;
+      localVideo.style.left = (e.clientX - offsetX) + 'px';
+      localVideo.style.top = (e.clientY - offsetY) + 'px';
+      localVideo.style.bottom = 'auto';
+      localVideo.style.right = 'auto';
+    });
+    document.addEventListener('mouseup', () => isDragging = false);
+
+    // --- Tap to show/hide controls like WhatsApp ---
+    remoteVideo.addEventListener('click', () => {
+      controlBar.classList.toggle('show');
     });
 
     initMedia();
   </script>
 </body>
 </html>
-
