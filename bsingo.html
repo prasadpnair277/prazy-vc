@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <title>Peer2Peer Call App</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif;
+      background: #121212; color: white; display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh;
+    }
+    header {
+      width: 100%; padding: 20px; background-color: #1e1e1e; text-align: center;
+      font-size: 1.5rem; font-weight: bold; color: #00d8ff; border-bottom: 1px solid #333;
+    }
+    .container { width: 100%; max-width: 500px; padding: 20px; }
+    video { width: 100%; border-radius: 12px; margin: 10px 0; background: black; }
+    #localVideo { transform: scaleX(-1); } /* mirror preview */
+    @media (max-width: 600px) {
+      #localVideo {
+        width: 40%; position: fixed; bottom: 15px; right: 15px; z-index: 10; border: 2px solid #00d8ff;
+      }
+    }
+    .input-group { margin: 15px 0; }
+    input, button { width: 100%; padding: 12px; margin-top: 8px; border-radius: 8px; border: none; font-size: 1rem; }
+    input { background-color: #1e1e1e; color: white; border: 1px solid #333; }
+    button { background-color: #00d8ff; color: black; font-weight: bold; cursor: pointer; transition: 0.2s; }
+    button:hover { background-color: #00c4e0; }
+    .peer-info {
+      background: #222; padding: 10px; border-radius: 8px; margin: 10px 0; word-break: break-all; font-size: 0.9rem;
+      text-align: center; cursor: pointer;
+    }
+    .controls { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; }
+    .controls button { flex: 1; }
+    .muted-notice { text-align: center; font-size: 0.9rem; color: #ff6666; display: none; margin-top: 5px; }
+  </style>
+</head>
+<body>
+
+  <header>🔗 Peer2Peer Call</header>
+  <div class="container">
+    <video id="remoteVideo" autoplay playsinline style="display:none;"></video>
+    <div id="mutedNotice" class="muted-notice">Participant muted</div>
+    <video id="localVideo" autoplay muted playsinline></video>
+
+    <!-- generateSection: contains generate button + the id box (id box hidden initially) -->
+    <div class="input-group" id="generateSection">
+      <button id="generateBtn" onclick="generateId()">Generate My ID</button>
+      <div class="peer-info" id="myIdBox" style="display:none;" onclick="copyPeerId()">
+        Your ID: <span id="peerIdText"></span> <br>
+        <small style="color:#00d8ff;">(Tap to copy)</small>
+      </div>
+    </div>
+
+    <div class="input-group" id="connectSection">
+      <label for="targetId">Enter Peer ID to Call:</label>
+      <input type="text" id="targetId" placeholder="e.g. abcd1234" />
+      <button id="connectBtn" onclick="callPeer()">Connect</button>
+    </div>
+
+    <div class="controls">
+      <button id="muteBtn" onclick="toggleMute()">Mute</button>
+      <button id="endBtn" onclick="endCall()">End Call</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <script>
+    let peer;
+    let localStream;
+    let currentCall;
+    let isMuted = false;
+    let dataConn;
+
+    const peerIdText = document.getElementById('peerIdText');
+    const myIdBox = document.getElementById('myIdBox');
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const mutedNotice = document.getElementById('mutedNotice');
+    const muteBtn = document.getElementById('muteBtn');
+
+    const connectSection = document.getElementById('connectSection');
+    const generateSection = document.getElementById('generateSection');
+    const generateBtn = document.getElementById('generateBtn');
+    const connectBtn = document.getElementById('connectBtn');
+
+    async function initMedia() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' },
+          audio: true
+        });
+        localVideo.srcObject = localStream;
+      } catch (err) {
+        alert("Camera/Microphone access denied.");
+      }
+    }
+
+    // Generate ID: create Peer, show id box, hide connect input (per requirement)
+    async function generateId() {
+      if (!localStream) await initMedia();
+
+      if (!peer) {
+        peer = new Peer();
+        setupPeerEvents();
+      }
+
+      // hide connect UI once ID generated (user asked: after generating id it should not show connect option)
+      connectSection.style.display = 'none';
+
+      // hide the generate button itself (but keep ID box visible once open event fires)
+      generateBtn.style.display = 'none';
+    }
+
+    function setupPeerEvents() {
+      peer.on('open', id => {
+        peerIdText.textContent = id;
+        myIdBox.style.display = 'block';
+      });
+
+      peer.on('call', call => {
+        call.answer(localStream);
+        handleIncomingCall(call);
+      });
+
+      peer.on('connection', conn => {
+        dataConn = conn;
+        dataConn.on('data', handleDataMessage);
+      });
+
+      // handle peer errors gracefully
+      peer.on('error', err => {
+        console.error('Peer error:', err);
+        alert('Peer error: ' + (err && err.message ? err.message : err));
+      });
+    }
+
+    function handleIncomingCall(call) {
+      // show remote when stream arrives
+      call.on('stream', remoteStream => {
+        remoteVideo.srcObject = remoteStream;
+        remoteVideo.style.display = 'block';
+      });
+      currentCall = call;
+
+      // hide connect UI and hide generate button (if not already)
+      connectSection.style.display = 'none';
+      generateBtn.style.display = 'none';
+    }
+
+    // Connect to a remote peer (works even if peer not yet created)
+    async function callPeer() {
+      const targetId = document.getElementById('targetId').value.trim();
+      if (!targetId) return alert("Please enter a valid ID.");
+      if (!localStream) await initMedia();
+
+      if (!peer) {
+        peer = new Peer();
+        setupPeerEvents();
+        peer.on('open', () => makeCall(targetId));
+      } else {
+        makeCall(targetId);
+      }
+
+      // After initiating a connection, hide the generate button (requirement)
+      generateBtn.style.display = 'none';
+      // Also hide the connect inputs
+      connectSection.style.display = 'none';
+    }
+
+    function makeCall(targetId) {
+      const call = peer.call(targetId, localStream);
+
+      // open a data connection to exchange mute events
+      try {
+        dataConn = peer.connect(targetId);
+        dataConn.on('open', () => { /* ready */ });
+        dataConn.on('data', handleDataMessage);
+      } catch (e) {
+        console.warn('Data conn error (non-fatal):', e);
+      }
+
+      // handle remote stream
+      call.on('stream', remoteStream => {
+        remoteVideo.srcObject = remoteStream;
+        remoteVideo.style.display = 'block';
+      });
+
+      call.on('close', () => {
+        // remote closed
+        remoteVideo.srcObject = null;
+        remoteVideo.style.display = 'none';
+      });
+
+      currentCall = call;
+    }
+
+    function handleDataMessage(msg) {
+      if (msg === 'MUTED') {
+        mutedNotice.style.display = 'block';
+      } else if (msg === 'UNMUTED') {
+        mutedNotice.style.display = 'none';
+      }
+    }
+
+    function toggleMute() {
+      if (!localStream) return;
+      isMuted = !isMuted;
+      const audioTrack = localStream.getAudioTracks()[0];
+      audioTrack.enabled = !isMuted;
+
+      // change button color & label
+      muteBtn.style.backgroundColor = isMuted ? '#ff6666' : '#00d8ff';
+      muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
+
+      // notify peer via data channel (if open)
+      if (dataConn && dataConn.open) {
+        try { dataConn.send(isMuted ? 'MUTED' : 'UNMUTED'); }
+        catch(e) { console.warn('Failed to send mute message', e); }
+      }
+    }
+
+    function endCall() {
+      // close media call
+      if (currentCall) {
+        try { currentCall.close(); } catch(e) { /* ignore */ }
+        currentCall = null;
+      }
+      // close peer and data connections
+      if (peer) {
+        try { peer.destroy(); } catch(e) { /* ignore */ }
+        peer = null;
+      }
+
+      // redirect to "home" — here we reload the page to reset UI and state
+      window.location.href = window.location.pathname;
+    }
+
+    function copyPeerId() {
+      const id = peerIdText.textContent;
+      if (!id) return;
+      navigator.clipboard.writeText(id).then(() => {
+        alert('Copied Peer ID: ' + id);
+      }).catch(() => {
+        // fallback for older Safari clipboard restrictions
+        prompt('Copy your ID manually:', id);
+      });
+    }
+
+    // start camera early for better UX (Safari may require a user gesture for audio playback / permission)
+    initMedia();
+  </script>
+</body>
+</html>
