@@ -73,6 +73,7 @@
     let currentCall;
     let isMuted = false;
     let dataConn;
+    let isGeneratedPeer = false; // to know if user clicked Generate button
 
     const peerIdText = document.getElementById('peerIdText');
     const myIdBox = document.getElementById('myIdBox');
@@ -98,8 +99,8 @@
       }
     }
 
-    // Generate ID: create Peer, show id box, hide connect input (per requirement)
     async function generateId() {
+      isGeneratedPeer = true;
       if (!localStream) await initMedia();
 
       if (!peer) {
@@ -107,17 +108,17 @@
         setupPeerEvents();
       }
 
-      // hide connect UI once ID generated (user asked: after generating id it should not show connect option)
       connectSection.style.display = 'none';
-
-      // hide the generate button itself (but keep ID box visible once open event fires)
       generateBtn.style.display = 'none';
     }
 
     function setupPeerEvents() {
       peer.on('open', id => {
-        peerIdText.textContent = id;
-        myIdBox.style.display = 'block';
+        // only show your ID if user clicked "Generate My ID"
+        if (isGeneratedPeer) {
+          peerIdText.textContent = id;
+          myIdBox.style.display = 'block';
+        }
       });
 
       peer.on('call', call => {
@@ -130,7 +131,6 @@
         dataConn.on('data', handleDataMessage);
       });
 
-      // handle peer errors gracefully
       peer.on('error', err => {
         console.error('Peer error:', err);
         alert('Peer error: ' + (err && err.message ? err.message : err));
@@ -138,19 +138,18 @@
     }
 
     function handleIncomingCall(call) {
-      // show remote when stream arrives
       call.on('stream', remoteStream => {
         remoteVideo.srcObject = remoteStream;
         remoteVideo.style.display = 'block';
       });
       currentCall = call;
 
-      // hide connect UI and hide generate button (if not already)
+      // hide unnecessary UI after connection
       connectSection.style.display = 'none';
       generateBtn.style.display = 'none';
+      myIdBox.style.display = 'none'; // hide ID after connected
     }
 
-    // Connect to a remote peer (works even if peer not yet created)
     async function callPeer() {
       const targetId = document.getElementById('targetId').value.trim();
       if (!targetId) return alert("Please enter a valid ID.");
@@ -164,37 +163,33 @@
         makeCall(targetId);
       }
 
-      // After initiating a connection, hide the generate button (requirement)
       generateBtn.style.display = 'none';
-      // Also hide the connect inputs
       connectSection.style.display = 'none';
+      myIdBox.style.display = 'none'; // hide any auto-generated id box
     }
 
     function makeCall(targetId) {
       const call = peer.call(targetId, localStream);
-
-      // open a data connection to exchange mute events
       try {
         dataConn = peer.connect(targetId);
-        dataConn.on('open', () => { /* ready */ });
+        dataConn.on('open', () => {});
         dataConn.on('data', handleDataMessage);
       } catch (e) {
         console.warn('Data conn error (non-fatal):', e);
       }
 
-      // handle remote stream
       call.on('stream', remoteStream => {
         remoteVideo.srcObject = remoteStream;
         remoteVideo.style.display = 'block';
       });
 
       call.on('close', () => {
-        // remote closed
         remoteVideo.srcObject = null;
         remoteVideo.style.display = 'none';
       });
 
       currentCall = call;
+      myIdBox.style.display = 'none'; // hide id once connected
     }
 
     function handleDataMessage(msg) {
@@ -211,11 +206,9 @@
       const audioTrack = localStream.getAudioTracks()[0];
       audioTrack.enabled = !isMuted;
 
-      // change button color & label
       muteBtn.style.backgroundColor = isMuted ? '#ff6666' : '#00d8ff';
       muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
 
-      // notify peer via data channel (if open)
       if (dataConn && dataConn.open) {
         try { dataConn.send(isMuted ? 'MUTED' : 'UNMUTED'); }
         catch(e) { console.warn('Failed to send mute message', e); }
@@ -223,18 +216,14 @@
     }
 
     function endCall() {
-      // close media call
       if (currentCall) {
-        try { currentCall.close(); } catch(e) { /* ignore */ }
+        try { currentCall.close(); } catch(e) {}
         currentCall = null;
       }
-      // close peer and data connections
       if (peer) {
-        try { peer.destroy(); } catch(e) { /* ignore */ }
+        try { peer.destroy(); } catch(e) {}
         peer = null;
       }
-
-      // redirect to "home" — here we reload the page to reset UI and state
       window.location.href = window.location.pathname;
     }
 
@@ -244,12 +233,17 @@
       navigator.clipboard.writeText(id).then(() => {
         alert('Copied Peer ID: ' + id);
       }).catch(() => {
-        // fallback for older Safari clipboard restrictions
         prompt('Copy your ID manually:', id);
       });
     }
 
-    // start camera early for better UX (Safari may require a user gesture for audio playback / permission)
+    // Fix for iOS Safari: reinitialize camera when tab regains focus
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && localStream) {
+        localVideo.srcObject = localStream;
+      }
+    });
+
     initMedia();
   </script>
 </body>
